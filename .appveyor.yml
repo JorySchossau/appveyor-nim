@@ -1,0 +1,114 @@
+
+## make sure to indent at least 3 spaces inside ps: command blocks
+
+image:
+  #- Visual Studio 2019
+  - macos
+  - Ubuntu1604
+
+version: 1.{build}
+pull_requests:
+  do_not_increment_build_number: true
+branches:
+  only:
+  - master
+# only attempt to build and deploy when a commit message contains "please release"
+only_commits:
+  message: /please\s+release/
+skip_tags: true
+#skip_non_tags: true
+clone_depth: 1
+notifications:
+- provider: Email
+  to:
+  - joryschossau@gmail.com
+  subject: (Appveyor) Build Status Message
+  on_build_success: true
+  on_build_failure: true
+  on_build_status_changed: false
+
+environment:
+  access_token:
+    secure: BDQ3pvItp6mIIyurJm7/Z+kJ1NhndOAF+yQna70xCIuIPW631soDStt+dCirw0+P
+
+# called after cloning the repo, before build
+install:
+- ps: |
+   # set up OS-specific differences
+   if ($IsLinux -Or $IsMacOS) {
+     $csources_buildscript = "build.sh"
+     $env_path_sep = ":"
+     $nim_c_compiler = "gcc"
+   } else { # windows
+     $csources_buildscript = "build64.bat"
+     $env_path_sep = ";"
+     $nim_c_compiler = "vcc"
+   }
+   $nimbinpath = (join-path (pwd) "nim/bin")
+   $nimexe = (join-path (pwd) "nim/bin/nim")
+   $nimbleexe = (join-path (pwd) "nim/bin/nimble")
+   
+   ## set up mac osx older SDK for compatibility
+   if ($IsMacOS) {
+     $originaldir = (pwd)
+     curl --output sdk.tar.xz -L "https://github.com/phracker/MacOSX-SDKs/releases/download/10.15/MacOSX10.13.sdk.tar.xz"
+     tar xf sdk.tar.xz
+     $env:MACOSX_DEPLOYMENT_TARGET="10.13"
+     $env:SDKROOT=(join-path (pwd) "MacOSX10.13.sdk")
+   }
+
+   if ($IsLinux -Or $IsMacOS) {
+     git clone --branch=devel https://github.com/nim-lang/nim
+     cd nim
+     # April 8, 2020 (v 1.3.1)
+     git checkout 7b582fd6a63e9fc62afbbcde2fc54192c199f04f
+     git clone https://github.com/nim-lang/csources
+     cd csources
+     iex ".\$csources_buildscript"
+     cd ..
+     iex "$nimexe c -d:release --cc:$nim_c_compiler koch"
+     ls .
+     .\koch boot -d:release -d:leanCompiler #*>$null
+     .\koch tools #*>$null
+     cd ..
+   }   
+
+# default build configuration
+configuration: Release
+
+build_script:
+- ps: |
+   ## set up github access
+   git config --global credential.helper store
+   Add-Content "$HOME\.git-credentials" "https://$($env:access_token):x-oauth-basic@github.com`n"
+   git config --global user.email joryschossau@gmail.com
+   git config --global user.name "Jory Schossau"
+   ## try to save nim!
+   if ($IsLinux -Or IsMacOS) {
+     strip $nimexe
+     strip $nimbleexe
+   }
+   if ($IsLinux) {
+     git checkout lin
+     Compress-Archive -Path $nimexe,$nimbleexe -DestinationPath nim.zip -Force
+     git add nim.zip
+     git commit -m "updated linux nim"
+   }
+   if ($IsMacOS) {
+     git checkout osx
+     Compress-Archive -Path $nimexe,$nimbleexe -DestinationPath nim.zip -Force
+     git add nim.zip
+     git commit -m "updated osx nim"
+   }
+   git push origin HEAD
+
+deploy:
+  - provider: GitHub
+    description: 'os-specific binary release of nim for appveyor'
+    auth_token:
+      secure: BDQ3pvItp6mIIyurJm7/Z+kJ1NhndOAF+yQna70xCIuIPW631soDStt+dCirw0+P
+    draft: false
+    prerelease: false
+    force_update: true
+    on:
+      branch: master
